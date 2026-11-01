@@ -1,0 +1,141 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 1rem;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 0.5rem;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.sub {
+  margin: 0.25rem 0 0;
+  color: #555;
+  font-size: 0.9rem;
+}
+
+.models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.model {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.model input {
+  width: 0.9rem;
+  accent-color: #2563eb;
+}
+
+.log {
+  flex: 1;
+  min-height: 24rem;
+  max-height: 48rem;
+  overflow-y: auto;
+  background: #f7f8fa;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.msg {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.7rem;
+}
+
+.user .msgText {
+  font-size: 0.95rem;
+}
+
+.userImage {
+  max-width: 100%;
+  max-height: 14rem;
+  border-radius: 0.4rem;
+  margin-bottom: 0.4rem;
+  display: block;
+}
+
+.model .modelHeader {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #1f2937;
+  border-bottom: 1px dashed #e5e7eb;
+  padding-bottom: 0.25rem;
+  margin-bottom: 0.3rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.err {
+  color: #b91c1c;
+  font-size: 0.7rem;
+}
+
+.wait {
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+
+.form {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.input {
+  flex: 1;
+  padding: 0.6rem;
+  border: 1px solid #cccccc;
+  border-radius: 0.5rem;
+  font-size: 0.95rem;
+}
+
+.input::file-selector-button {
+  display: none;
+}
+
+.fileInput {
+  font-size: 0;
+  opacity: 0;
+  position: absolute;
+  pointer-events: none;
+}
+
+.send {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: #2563eb;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.send:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

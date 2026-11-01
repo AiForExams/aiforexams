@@ -1,16 +1,55 @@
-## Hi there 👋
+# ИИ-чат для тестов
 
-<!--
-**AiForExams/aiforexams** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
+Чат-приложение: пользователь загружает фото теста, выбирает модели (по умолчанию все), и сервер параллельно стучится в несколько ИИ через OpenRouter. В чате сразу появляются ответы с заголовками:
 
-Here are some ideas to get you started:
+CLAUDE — ответ  
+GEMINI — ответ  
+DEEPSEEK — ответ  
+ChatGPT — ответ
 
-- 🔭 I’m currently working on ...
-- 🌱 I’m currently learning ...
-- 👯 I’m looking to collaborate on ...
-- 🤔 I’m looking for help with ...
-- 💬 Ask me about ...
-- 📫 How to reach me: ...
-- 😄 Pronouns: ...
-- ⚡ Fun fact: ...
--->
+## Запуск локально
+
+```sh
+npm install
+npm run dev
+```
+
+Локально без ключа серверная часть может вернуть ошибку, если для `OPENROUTER_API_KEY` нет значения. Чтобы протестировать полноценно:
+
+```sh
+# в отдельном окне запусти симуляцию локального Vercel-окружения
+npx vercel env pull
+# или задай переменную вручную при запуске Vite:
+
+OPENROUTER_API_KEY=sk-or-... npm run dev
+```
+
+## Настройка ключа
+
+1. Зарегистрируйся на [OpenRouter](https://openrouter.ai).
+2. Получи API-ключ.
+3. В Vercel добавь переменную окружения:
+   - `OPENROUTER_API_KEY` — значение ключа.
+4. При необходимости включи/выключи модели в `src/server/chat.ts` (массив `MODELS`).
+
+## Выбор моделей
+
+По умолчанию используются:
+
+- Claude (anthropic/claude-sonnet-4-6)
+- Gemini (google/gemini-3-pro-preview)
+- DeepSeek (deepseek/deepseek-chat)
+- ChatGPT / GPT-4.1 (openai/gpt-4.1)
+
+Позже можно добавить второй ключ OpenRouter для ротации или заменить модели в конфиге.
+
+## Планы
+
+- Возможность выбирать модели в чате (включено/выключено).
+- Краткий ответ «A, B, C, D» по умолчанию.
+- Подсветка совпадения ответов.
+- Позже — второй ключ и ротация.
+
+## Примечание
+
+Ключи хранятся на стороне сервера, в переменных окружения Vercel. Не отправляй их в репозиторий.
