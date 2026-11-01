@@ -9,3 +9,6 @@ build
 .env.*
 .env.local
 .vercel
+
+# local logs
+*.log
