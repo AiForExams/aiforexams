@@ -201,7 +201,8 @@ function classify(error: unknown): SlotError {
   return { reason: 'provider', text: 'провайдер недоступен' }
 }
 
-function describe(error: unknown): string {    if (error instanceof HttpError) return `${error.status} ${error.message}`
+function describe(error: unknown): string {
+  if (error instanceof HttpError) return `${error.status} ${error.message}`
   if (error instanceof Error && error.name === 'TimeoutError') return 'превышено время ожидания'
   if (error instanceof Error) return error.message
   return 'неизвестная ошибка'
