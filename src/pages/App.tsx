@@ -17,6 +17,7 @@ interface Reply {
   text: string
   ms?: number
   error?: boolean
+  reason?: string
 }
 
 interface UserMessage {
@@ -34,9 +35,21 @@ interface AiMessage {
   accent: string
   text: string
   error?: boolean
+  reason?: string
 }
 
 type Message = UserMessage | AiMessage
+
+/** Короткие ярлыки причин сбоя — сервер присылает код, текст причины уже в теле. */
+const REASON_LABELS: Record<string, string> = {
+  limit: 'Лимит',
+  timeout: 'Таймаут',
+  network: 'Нет связи',
+  provider: 'Ошибка провайдера',
+  empty: 'Пустой ответ',
+  reasoning: 'Без решения',
+  noKeys: 'Нет ключей',
+}
 
 const MAX_SIDE = 1400
 const JPEG_QUALITY = 0.82
@@ -303,6 +316,7 @@ export function App() {
           accent: accentFor(reply.id),
           text: reply.text,
           error: reply.error,
+          reason: reply.reason,
         })),
       ])
     } catch (error) {
@@ -473,6 +487,11 @@ export function App() {
                     <div className={styles.aiBody}>
                       <p className={styles.aiName}>{message.label}</p>
                       <div className={`${styles.aiText} ${message.error ? styles.aiError : ''}`}>
+                        {message.error && message.reason && (
+                          <span className={styles.reason}>
+                            {REASON_LABELS[message.reason] ?? 'Сбой'}
+                          </span>
+                        )}
                         {letter && (
                           <span
                             className={`${styles.letter} ${matched ? styles.letterMatch : ''}`}

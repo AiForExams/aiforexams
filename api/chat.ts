@@ -30,12 +30,21 @@ interface ModelConfig {
   persona: string
 }
 
+/** Почему слот остался без ответа — чтобы интерфейс мог объяснить это словами. */
+type SlotReason = 'limit' | 'timeout' | 'network' | 'provider' | 'empty' | 'reasoning' | 'noKeys'
+
+interface SlotError {
+  reason: SlotReason
+  text: string
+}
+
 interface ModelReply {
   id: string
   label: string
   text: string
   ms: number
   error?: boolean
+  reason?: SlotReason
 }
 
 /** Реплика прошлых ходов: память диалога. */
@@ -168,6 +177,19 @@ function contextSteps(history: HistoryItem[]): HistoryItem[][] {
   if (!history.length) return [[]]
   const half = history.slice(Math.ceil(history.length / 2))
   return half.length && half.length < history.length ? [history, half, []] : [history, []]
+}
+
+/** Переводит ошибку провайдера в короткую причину и текст для карточки слота. */
+function classify(error: unknown): SlotError {
+  if (error instanceof HttpError) {
+    if (isQuotaError(error)) return { reason: 'limit', text: 'упёрлись в лимит бесплатной модели' }
+    return { reason: 'provider', text: `провайдер ответил ошибкой ${error.status}` }
+  }
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    return { reason: 'timeout', text: 'модель не ответила за 40 секунд' }
+  }
+  if (error instanceof TypeError) return { reason: 'network', text: 'нет связи с провайдером' }
+  return { reason: 'provider', text: 'провайдер недоступен' }
 }
 
 function describe(error: unknown): string {
@@ -373,7 +395,7 @@ async function askModel(
 ): Promise<ModelReply> {
   const startedAt = Date.now()
   const deadline = startedAt + SLOT_BUDGET_MS
-  let lastError = 'нет доступных ключей'
+  let lastError: SlotError = { reason: 'noKeys', text: 'нет доступных ключей для этой модели' }
 
   for (const candidate of model.chain) {
     if (Date.now() > deadline) break
@@ -412,13 +434,13 @@ async function askModel(
                 ms: Date.now() - startedAt,
               }
             }
-            lastError = 'модель написала только рассуждения'
+            lastError = { reason: 'reasoning', text: 'модель написала только рассуждения, без решения' }
             break
           }
-          lastError = 'модель вернула пустой ответ'
+          lastError = { reason: 'empty', text: 'модель вернула пустой ответ' }
           break
         } catch (error) {
-          lastError = describe(error)
+          lastError = classify(error)
           // Дальше ужимать имеет смысл только при квоте: прочие ошибки — к следующему ключу.
           if (!isQuotaError(error)) break
         }
@@ -429,9 +451,10 @@ async function askModel(
   return {
     id: model.id,
     label: model.label,
-    text: `Ошибка: ${lastError}`,
+    text: lastError.text,
     ms: Date.now() - startedAt,
     error: true,
+    reason: lastError.reason,
   }
 }
 
