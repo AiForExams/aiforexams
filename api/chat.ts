@@ -253,6 +253,8 @@ function cleanBody(text: string): string {
     // Пересказ самого шаблона ответа: «ОТВЕТ: <буква>) <текст варианта>».
     if (/<[^>]+>/.test(probe)) continue
     if (/инструкц|шаблон|промежуточн/i.test(probe)) continue
+    // Цитата собственной роли: «"Отвечай в манере DeepSeek: …"».
+    if (/^[«"“„'][^»"”']{0,12}(?:отвечай|веди|пиши)/i.test(probe)) continue
     // Обрывок вроде «I» или «OK.» от оборванного по токенам рассуждения.
     if (/^[A-Za-z]{1,2}[.,!?]?$/.test(probe)) continue
     // Обычная строка — с её собственной нумерацией и отступами.
@@ -271,7 +273,8 @@ function extractAnswer(raw: string): string {
     const letter = match[1].toUpperCase()
     const tail = match[2].trim().replace(/^[).:\-–—]+\s*/, '')
     const line = tail ? `ОТВЕТ: ${letter}) ${tail}` : `ОТВЕТ: ${letter}`
-    const body = cleanBody(text.replace(match[0], ''))
+    // Всё после строки ОТВЕТ — уже не решение, а разговоры: берём только то, что до неё.
+    const body = cleanBody(text.slice(0, match.index ?? 0))
     return body ? `${body}\n${line}` : line
   }
 
