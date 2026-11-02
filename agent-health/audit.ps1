@@ -119,7 +119,8 @@ Assert 'api/chat requires a model' ($noModels.Status -eq 400) ('status ' + $noMo
 $noStore = Run-Git @('grep', '-l', 'no-store', '--', 'api')
 Assert 'handler marks responses no-store' ($noStore.Code -eq 0) ($noStore.Output -join ', ')
 
-$keyLeak = Run-Git @('grep', '-l', '-E', 'sk-or-v1-|orcarouter[_-]?[A-Za-z0-9]{20,}', '--', '.')
+# Exclude this script: it contains the pattern itself and is not a secret.
+$keyLeak = Run-Git @('grep', '-l', '-E', 'sk-or-v1-|orcarouter[_-]?[A-Za-z0-9]{20,}', '--', '.', ':(exclude)agent-health/audit.ps1')
 Assert 'no API keys in tracked files' ($keyLeak.Code -ne 0) $(if ($keyLeak.Code -eq 0) { 'found in: ' + ($keyLeak.Output -join ', ') } else { 'clean' })
 
 $envTracked = Run-Git @('ls-files', '--error-unmatch', '.env')
