@@ -34,14 +34,39 @@ OPENROUTER_API_KEY=sk-or-... npm run dev
 
 ## Выбор моделей
 
-По умолчанию используются:
+Приложение работает полностью на бесплатных моделях, поэтому не требует баланса:
 
-- Claude (anthropic/claude-sonnet-4-6)
-- Gemini (google/gemini-3-pro-preview)
-- DeepSeek (deepseek/deepseek-chat)
-- ChatGPT / GPT-4.1 (openai/gpt-4.1)
+| Колонка | Основная модель | Резерв |
+| --- | --- | --- |
+| Claude | `nvidia/nemotron-3-ultra-550b-a55b:free` (OpenRouter) | `nvidia/nemotron-3.5-super-vl:free` |
+| Gemini | `google/gemma-4-26b-a4b-it:free` (OpenRouter) | `gemma-4-31b-it:free`, `nemotron-3.5-super-vl:free` |
+| DeepSeek | `deepseek/deepseek-v4.1-flash-free` (OrcaRouter) | `gemma-4-31b-it:free`, `nemotron-3.5-super-vl:free` |
+| ChatGPT | `nvidia/nemotron-3.5-super-vl:free` (OpenRouter) | `gemma-4-31b-it:free` |
 
-Позже можно добавить второй ключ OpenRouter для ротации или заменить модели в конфиге.
+Названия колонок — это роли: каждая модель получает свой системный промпт и отвечает
+в манере Claude, Gemini, DeepSeek или ChatGPT. Порядок перебора задан в `MODELS` в
+`api/chat.ts`: если модель упёрлась в лимит бесплатного тарифа (429), слот молча
+переключается на следующую из списка.
+
+Изображения принимают не все бесплатные модели. Для тех, кто видит только текст,
+фото один раз распознаёт `nvidia/nemotron-3.5-super-vl:free`, и модель получает
+готовый текст задания.
+
+## Память и контекст
+
+Каждый ответ учитывает историю чата: клиент отправляет последние 12 сообщений в поле
+`history`, а сервер подставляет их в диалог. У каждого слота своя память — модель
+видит предыдущие вопросы и только **свои** прошлые ответы, поэтому четыре колонки не
+подмешивают чужие рассуждения. Кнопка «Новый чат» очищает и экран, и память.
+
+Для двух аккаунтов на провайдера есть четыре переменные окружения:
+`OPENROUTER_API_KEY`, `ORCAROUTER_API_KEY` и `OPENROUTER_API_KEY2`,
+`ORCAROUTER_API_KEY2`. При ответе `429` слот переключается на следующий ключ, затем
+на следующую модель из цепочки.
+
+Бесплатные модели OrcaRouter требуют, чтобы к аккаунту был привязан GitHub-аккаунт
+не первой свежести: до этого шлюз отвечает `429 free_rate_limited`, и слот DeepSeek
+работает на резервной модели OpenRouter.
 
 ## Планы
 

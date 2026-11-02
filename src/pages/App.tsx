@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import styles from './App.module.css'
 
 const MODELS = [
-  { id: 'claude', label: 'CLAUDE' },
-  { id: 'gemini', label: 'GEMINI' },
-  { id: 'deepseek', label: 'DEEPSEEK' },
-  { id: 'chatgpt', label: 'ChatGPT' },
+  { id: 'claude', label: 'Claude', accent: '#d97757' },
+  { id: 'gemini', label: 'Gemini', accent: '#4f8cff' },
+  { id: 'deepseek', label: 'DeepSeek', accent: '#a78bfa' },
+  { id: 'chatgpt', label: 'ChatGPT', accent: '#10a37f' },
 ] as const
 
 type ModelId = (typeof MODELS)[number]['id']
@@ -19,14 +19,31 @@ interface Reply {
   error?: boolean
 }
 
-type Message =
-  | { kind: 'user'; text: string; image?: string }
-  | { kind: 'ai'; label: string; text: string; ms?: number; error?: boolean }
+interface UserMessage {
+  kind: 'user'
+  turn: number
+  text: string
+  image?: string
+}
+
+interface AiMessage {
+  kind: 'ai'
+  turn: number
+  modelId: string
+  label: string
+  accent: string
+  text: string
+  error?: boolean
+}
+
+type Message = UserMessage | AiMessage
 
 const MAX_SIDE = 1400
 const JPEG_QUALITY = 0.82
+const MAX_TEXTAREA = 168
+const STORAGE_KEY = 'exam-ai:session:v1'
 
-/** Сжимает фото в data-URL: так его понимает и сервер, и OpenRouter. */
+/** Сжимает фото в data-URL: blob-URL сервер прочитать не может. */
 async function toDataUrl(file: File): Promise<string> {
   try {
     const bitmap = await createImageBitmap(file)
@@ -53,23 +70,106 @@ async function toDataUrl(file: File): Promise<string> {
   }
 }
 
+function accentFor(modelId: string): string {
+  return MODELS.find((m) => m.id === modelId)?.accent ?? '#8b93a7'
+}
+
+/** Отделяет «ОТВЕТ: B» от пояснения, чтобы показать букву отдельно. */
+function splitAnswer(text: string): { letter?: string; body: string } {
+  const match = text.match(/ОТВЕТ\s*[:：]\s*([A-Da-d?])[^\n]*/)
+  if (!match) return { body: text }
+  return {
+    letter: match[1].toUpperCase(),
+    body: text.replace(match[0], '').trim(),
+  }
+}
+
+function renderInline(text: string) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((chunk, index) =>
+    chunk.startsWith('**') && chunk.endsWith('**') ? (
+      <strong key={index}>{chunk.slice(2, -2)}</strong>
+    ) : (
+      <span key={index}>{chunk}</span>
+    ),
+  )
+}
+
+function loadMessages(): Message[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as { messages?: Message[] }
+    return Array.isArray(parsed.messages) ? parsed.messages : []
+  } catch {
+    return []
+  }
+}
+
 export function App() {
-  const [messages, setMessages] = useState<Message[]>([])
+  const [messages, setMessages] = useState<Message[]>(loadMessages)
   const [pending, setPending] = useState(false)
+  const [text, setText] = useState('')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [enabled, setEnabled] = useState<Record<ModelId, boolean>>({
     claude: true,
     gemini: true,
     deepseek: true,
     chatgpt: true,
   })
-  const [text, setText] = useState('')
 
   const fileRef = useRef<HTMLInputElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const activeModels = MODELS.filter((m) => enabled[m.id])
+  const empty = messages.length === 0 && !pending
+
+  /** Победившая буква по каждому вопросу — чтобы отметить совпадение. */
+  const consensus = useMemo(() => {
+    const byTurn = new Map<number, Map<string, number>>()
+    for (const message of messages) {
+      if (message.kind !== 'ai' || message.error) continue
+      const letter = splitAnswer(message.text).letter
+      if (!letter || letter === '?') continue
+      const votes = byTurn.get(message.turn) ?? new Map<string, number>()
+      votes.set(letter, (votes.get(letter) ?? 0) + 1)
+      byTurn.set(message.turn, votes)
+    }
+
+    const result = new Map<number, { letter: string; count: number }>()
+    for (const [turn, votes] of byTurn) {
+      let best: { letter: string; count: number } | null = null
+      for (const [letter, count] of votes) {
+        if (!best || count > best.count) best = { letter, count }
+      }
+      if (best) result.set(turn, best)
+    }
+    return result
+  }, [messages])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [messages, pending])
+
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA)}px`
+  }, [text])
+
+  // Сессия переживает перезагрузку страницы. Фото не сохраняем — они слишком тяжёлые.
+  useEffect(() => {
+    try {
+      const slim = messages.map((message) =>
+        message.kind === 'user' ? { ...message, image: undefined } : message,
+      )
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ messages: slim }))
+    } catch {
+      /* приватный режим — просто работаем без сохранения */
+    }
+  }, [messages])
 
   function toggleModel(id: ModelId) {
     setEnabled((prev) => ({ ...prev, [id]: !prev[id] }))
@@ -77,36 +177,57 @@ export function App() {
 
   async function ask(question: string, photo?: string) {
     const trimmed = question.trim()
-    if (!trimmed && !photo) return
-    if (pending) return
+    if ((!trimmed && !photo) || pending) return
 
-    const chosen = MODELS.filter((m) => enabled[m.id]).map((m) => m.id)
-    if (!chosen.length) {
+    if (!activeModels.length) {
       setMessages((prev) => [
         ...prev,
-        { kind: 'ai', label: 'ВНИМАНИЕ', text: 'Включи хотя бы одну модель.', error: true },
+        {
+          kind: 'ai',
+          turn: 0,
+          modelId: 'system',
+          label: 'Внимание',
+          accent: '#f59e0b',
+          text: 'Включи хотя бы одну модель в меню слева.',
+          error: true,
+        },
       ])
       return
     }
 
+    const turn = messages.filter((message) => message.kind === 'user').length + 1
     setPending(true)
     setText('')
-    setMessages((prev) => [...prev, { kind: 'user', text: trimmed, image: photo }])
+
+    // Память диалога: предыдущие ходы уходят на сервер, чтобы модели держали контекст.
+    const history = messages
+      .filter((message) => (message.kind === 'ai' ? message.modelId !== 'system' : true) && message.text.trim())
+      .slice(-12)
+      .map((message) =>
+        message.kind === 'user'
+          ? { role: 'user' as const, text: message.text }
+          : { role: 'assistant' as const, text: message.text, modelId: message.modelId },
+      )
+
+    setMessages((prev) => [...prev, { kind: 'user', turn, text: trimmed, image: photo }])
 
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: trimmed, image: photo ?? '', models: chosen }),
+        body: JSON.stringify({
+          text: trimmed,
+          image: photo ?? '',
+          models: activeModels.map((m) => m.id),
+          history,
+        }),
       })
 
       const data = (await response.json().catch(() => null)) as
         | { responses?: Reply[]; error?: string }
         | null
 
-      if (!response.ok) {
-        throw new Error(data?.error ?? `сервер ответил ${response.status}`)
-      }
+      if (!response.ok) throw new Error(data?.error ?? `сервер ответил ${response.status}`)
 
       const replies = data?.responses ?? []
       if (!replies.length) throw new Error('сервер вернул пустой список ответов')
@@ -115,15 +236,28 @@ export function App() {
         ...prev,
         ...replies.map<Message>((reply) => ({
           kind: 'ai',
-          label: reply.label ?? reply.id.toUpperCase(),
+          turn,
+          modelId: reply.id,
+          label: reply.label ?? reply.id,
+          accent: accentFor(reply.id),
           text: reply.text,
-          ms: reply.ms,
           error: reply.error,
         })),
       ])
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'неизвестная ошибка'
-      setMessages((prev) => [...prev, { kind: 'ai', label: 'ОШИБКА', text: reason, error: true }])
+      setMessages((prev) => [
+        ...prev,
+        {
+          kind: 'ai',
+          turn,
+          modelId: 'system',
+          label: 'Ошибка',
+          accent: '#ef4444',
+          text: reason,
+          error: true,
+        },
+      ])
     } finally {
       setPending(false)
     }
@@ -139,110 +273,204 @@ export function App() {
       await ask(text, dataUrl)
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'не удалось обработать фото'
-      setMessages((prev) => [...prev, { kind: 'ai', label: 'ОШИБКА', text: reason, error: true }])
+      setMessages((prev) => [
+        ...prev,
+        {
+          kind: 'ai',
+          turn: 0,
+          modelId: 'system',
+          label: 'Ошибка',
+          accent: '#ef4444',
+          text: reason,
+          error: true,
+        },
+      ])
     }
   }
 
-  function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
+  function submit() {
     void ask(text)
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      submit()
+    }
+  }
+
+  function resetChat() {
+    setMessages([])
+    setText('')
+    setSidebarOpen(false)
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+    } catch {
+      /* ignore */
+    }
   }
 
   return (
     <div className={styles.root}>
-      <header className={styles.header}>
-        <h1 className={styles.title}>Решаем тест</h1>
-        <p className={styles.sub}>Кинь фото задания — четыре ИИ ответят сразу</p>
-      </header>
+      <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ''}`}>
+        <div className={styles.brand}>
+          <span className={styles.brandMark}>Σ</span>
+          <span className={styles.brandName}>Exam AI</span>
+        </div>
 
-      <div className={styles.models}>
-        {MODELS.map((model) => (
-          <button
-            key={model.id}
-            type="button"
-            onClick={() => toggleModel(model.id)}
-            className={`${styles.chip} ${enabled[model.id] ? styles.chipOn : ''}`}
-            aria-pressed={enabled[model.id]}
-          >
-            {model.label}
-          </button>
-        ))}
-      </div>
+        <button type="button" className={styles.newChat} onClick={resetChat}>
+          <span className={styles.plus}>+</span> Новый чат
+        </button>
 
-      <main className={styles.log}>
-        {messages.length === 0 && (
-          <p className={styles.empty}>
-            Нажми на камеру и сфотографируй вопрос. Ответы придут от CLAUDE, GEMINI, DEEPSEEK и
-            ChatGPT.
-          </p>
-        )}
+        <ul className={styles.modelList}>
+          {MODELS.map((model) => (
+            <li key={model.id}>
+              <button
+                type="button"
+                className={styles.modelRow}
+                onClick={() => toggleModel(model.id)}
+                aria-pressed={enabled[model.id]}
+              >
+                <span className={styles.modelDot} style={{ background: model.accent }} />
+                <span className={styles.modelName}>{model.label}</span>
+                <span className={`${styles.switch} ${enabled[model.id] ? styles.switchOn : ''}`} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </aside>
 
-        {messages.map((message, index) =>
-          message.kind === 'user' ? (
-            <div key={index} className={styles.userMsg}>
-              {message.image && (
-                <img className={styles.photo} src={message.image} alt="фото задания" />
-              )}
-              {message.text && <p className={styles.userText}>{message.text}</p>}
+      {sidebarOpen && (
+        <button
+          type="button"
+          className={styles.overlay}
+          aria-label="Закрыть меню"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <main className={styles.main}>
+        <button
+          type="button"
+          className={styles.menuBtn}
+          onClick={() => setSidebarOpen((open) => !open)}
+          aria-label="Меню"
+        >
+          ☰
+        </button>
+
+        {!empty && (
+          <div className={styles.scroll} ref={scrollRef}>
+            <div className={styles.thread}>
+              {messages.map((message, index) => {
+                if (message.kind === 'user') {
+                  return (
+                    <div key={index} className={styles.userRow}>
+                      <div className={styles.userBubble}>
+                        {message.image && (
+                          <img className={styles.userPhoto} src={message.image} alt="задание" />
+                        )}
+                        {message.text && <p className={styles.userText}>{message.text}</p>}
+                      </div>
+                    </div>
+                  )
+                }
+
+                const { letter, body } = splitAnswer(message.text)
+                const vote = consensus.get(message.turn)
+                const matched =
+                  Boolean(letter) && Boolean(vote) && vote!.count >= 2 && vote!.letter === letter
+
+                return (
+                  <article key={index} className={styles.aiRow}>
+                    <span
+                      className={styles.avatar}
+                      style={{ background: `${message.accent}22`, color: message.accent }}
+                    >
+                      {message.label.slice(0, 1).toUpperCase()}
+                    </span>
+                    <div className={styles.aiBody}>
+                      <p className={styles.aiName}>{message.label}</p>
+                      <div className={`${styles.aiText} ${message.error ? styles.aiError : ''}`}>
+                        {letter && (
+                          <span
+                            className={`${styles.letter} ${matched ? styles.letterMatch : ''}`}
+                            style={{ color: message.accent, background: `${message.accent}1f` }}
+                          >
+                            {letter}
+                          </span>
+                        )}
+                        <p className={styles.aiParagraph}>{renderInline(body)}</p>
+                      </div>
+                    </div>
+                  </article>
+                )
+              })}
+
+              {pending &&
+                activeModels.map((model) => (
+                  <article key={`ghost-${model.id}`} className={styles.aiRow}>
+                    <span
+                      className={styles.avatar}
+                      style={{ background: `${model.accent}22`, color: model.accent }}
+                    >
+                      {model.label.slice(0, 1)}
+                    </span>
+                    <div className={styles.aiBody}>
+                      <p className={styles.aiName}>{model.label}</p>
+                      <div className={styles.ghost}>
+                        <span className={styles.ghostLine} />
+                        <span className={styles.ghostLine} />
+                      </div>
+                    </div>
+                  </article>
+                ))}
             </div>
-          ) : (
-            <article
-              key={index}
-              className={`${styles.card} ${message.error ? styles.cardError : ''}`}
-            >
-              <div className={styles.cardHead}>
-                <span className={styles.cardLabel}>{message.label}</span>
-                {typeof message.ms === 'number' && !message.error && (
-                  <span className={styles.ms}>{(message.ms / 1000).toFixed(1)} с</span>
-                )}
-              </div>
-              <p className={styles.answer}>{message.text}</p>
-            </article>
-          ),
-        )}
-
-        {pending && (
-          <div className={styles.thinking}>
-            <span className={styles.dot} />
-            <span className={styles.dot} />
-            <span className={styles.dot} />
-            <span className={styles.thinkingText}>спрашиваем модели…</span>
           </div>
         )}
 
-        <div ref={bottomRef} />
+        <div className={`${styles.composerWrap} ${empty ? styles.composerCenter : ''}`}>
+          <div className={styles.composer}>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className={styles.hiddenInput}
+              onChange={handlePhoto}
+            />
+            <button
+              type="button"
+              className={styles.attach}
+              onClick={() => fileRef.current?.click()}
+              disabled={pending}
+              aria-label="Прикрепить фото"
+            >
+              +
+            </button>
+            <textarea
+              ref={textareaRef}
+              className={styles.textarea}
+              value={text}
+              rows={1}
+              onChange={(event) => setText(event.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Сообщение"
+              aria-label="Сообщение"
+            />
+            <button
+              type="button"
+              className={styles.sendBtn}
+              onClick={submit}
+              disabled={pending || !text.trim()}
+              aria-label="Отправить"
+            >
+              ↑
+            </button>
+          </div>
+          <p className={styles.disclaimer}>ИИ может ошибаться.</p>
+        </div>
       </main>
-
-      <form className={styles.composer} onSubmit={handleSubmit}>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className={styles.hiddenInput}
-          onChange={handlePhoto}
-        />
-        <button
-          type="button"
-          className={styles.photoBtn}
-          onClick={() => fileRef.current?.click()}
-          disabled={pending}
-          aria-label="Прикрепить фото задания"
-          title="Прикрепить фото задания"
-        >
-          📷
-        </button>
-        <input
-          className={styles.input}
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          placeholder="или напиши вопрос текстом"
-          aria-label="Вопрос текстом"
-        />
-        <button type="submit" className={styles.send} disabled={pending || !text.trim()}>
-          {pending ? '…' : '→'}
-        </button>
-      </form>
     </div>
   )
 }
