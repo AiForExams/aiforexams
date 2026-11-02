@@ -123,7 +123,10 @@ const MAX_TOKENS = 400
 const TRANSCRIBE_TOKENS = 900
 const TIMEOUT_MS = 40_000
 const SLOT_BUDGET_MS = 80_000
-const MAX_HISTORY = 12
+const DEFAULT_MEMORY_TURNS = 3
+const MAX_MEMORY_TURNS = 12
+/** Один ход — это вопрос и до четырёх ответов моделей. */
+const MESSAGES_PER_TURN = 5
 const MAX_HISTORY_CHARS = 1_200
 
 interface Account {
@@ -353,8 +356,13 @@ async function askModel(
   }
 }
 
-function parseHistory(value: unknown): HistoryItem[] {
-  if (!Array.isArray(value)) return []
+function parseMemory(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_MEMORY_TURNS
+  return Math.max(0, Math.min(MAX_MEMORY_TURNS, Math.floor(value)))
+}
+
+function parseHistory(value: unknown, limit: number): HistoryItem[] {
+  if (limit <= 0 || !Array.isArray(value)) return []
   const items: HistoryItem[] = []
   for (const entry of value) {
     if (!entry || typeof entry !== 'object') continue
@@ -367,7 +375,7 @@ function parseHistory(value: unknown): HistoryItem[] {
       modelId: typeof item.modelId === 'string' ? item.modelId : undefined,
     })
   }
-  return items.slice(-MAX_HISTORY)
+  return items.slice(-limit)
 }
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
@@ -381,13 +389,20 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(400).json({ error: 'нет тела запроса' })
   }
 
-  const payload = body as { text?: unknown; image?: unknown; models?: unknown; history?: unknown }
+  const payload = body as {
+    text?: unknown
+    image?: unknown
+    models?: unknown
+    history?: unknown
+    memory?: unknown
+  }
   const text = typeof payload.text === 'string' ? payload.text.trim() : ''
   const image = typeof payload.image === 'string' ? payload.image : ''
   const requested = Array.isArray(payload.models)
     ? payload.models.filter((m): m is string => typeof m === 'string')
     : MODELS.map((m) => m.id)
-  const history = parseHistory(payload.history)
+  const memoryTurns = parseMemory(payload.memory)
+  const history = parseHistory(payload.history, memoryTurns * MESSAGES_PER_TURN)
 
   const selected = MODELS.filter((m) => requested.includes(m.id))
 

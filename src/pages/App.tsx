@@ -42,6 +42,56 @@ const MAX_SIDE = 1400
 const JPEG_QUALITY = 0.82
 const MAX_TEXTAREA = 168
 const STORAGE_KEY = 'exam-ai:session:v1'
+const MEMORY_KEY = 'exam-ai:memory:v1'
+const DEFAULT_MEMORY = 3
+const MAX_MEMORY = 8
+
+interface HistoryEntry {
+  role: 'user' | 'assistant'
+  text: string
+  modelId?: string
+}
+
+function pluralTurns(count: number): string {
+  const mod100 = count % 100
+  const mod10 = count % 10
+  if (mod10 === 1 && mod100 !== 11) return 'ход'
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'хода'
+  return 'ходов'
+}
+
+function loadMemory(): number {
+  try {
+    const raw = Number(localStorage.getItem(MEMORY_KEY))
+    if (!Number.isFinite(raw)) return DEFAULT_MEMORY
+    return Math.max(0, Math.min(MAX_MEMORY, Math.round(raw)))
+  } catch {
+    return DEFAULT_MEMORY
+  }
+}
+
+/** Берёт последние N ходов вместе с ответами, чтобы отправить их как контекст. */
+function buildHistory(all: Message[], limitTurns: number): HistoryEntry[] {
+  if (limitTurns <= 0) return []
+
+  let seen = 0
+  let start = all.length
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    if (all[i].kind !== 'user') continue
+    seen += 1
+    if (seen > limitTurns) break
+    start = i
+  }
+
+  return all
+    .slice(start)
+    .filter((message) => (message.kind === 'ai' ? message.modelId !== 'system' : true) && message.text.trim())
+    .map((message) =>
+      message.kind === 'user'
+        ? { role: 'user' as const, text: message.text }
+        : { role: 'assistant' as const, text: message.text, modelId: message.modelId },
+    )
+}
 
 /** Сжимает фото в data-URL: blob-URL сервер прочитать не может. */
 async function toDataUrl(file: File): Promise<string> {
@@ -108,6 +158,7 @@ function loadMessages(): Message[] {
 export function App() {
   const [messages, setMessages] = useState<Message[]>(loadMessages)
   const [pending, setPending] = useState(false)
+  const [memoryTurns, setMemoryTurns] = useState(loadMemory)
   const [text, setText] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [enabled, setEnabled] = useState<Record<ModelId, boolean>>({
@@ -123,6 +174,14 @@ export function App() {
 
   const activeModels = MODELS.filter((m) => enabled[m.id])
   const empty = messages.length === 0 && !pending
+  const turnsSoFar = messages.filter((message) => message.kind === 'user').length
+  const memoryUsed = Math.min(memoryTurns, turnsSoFar)
+  const memoryHint =
+    memoryTurns === 0
+      ? 'Контекст выключен: каждый вопрос с нуля.'
+      : turnsSoFar === 0
+        ? `Модели запомнят до ${memoryTurns} ${pluralTurns(memoryTurns)}.`
+        : `Учитывается ${memoryUsed} из ${memoryTurns} ${pluralTurns(memoryTurns)}.`
 
   /** Победившая буква по каждому вопросу — чтобы отметить совпадение. */
   const consensus = useMemo(() => {
@@ -171,6 +230,14 @@ export function App() {
     }
   }, [messages])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(MEMORY_KEY, String(memoryTurns))
+    } catch {
+      /* ignore */
+    }
+  }, [memoryTurns])
+
   function toggleModel(id: ModelId) {
     setEnabled((prev) => ({ ...prev, [id]: !prev[id] }))
   }
@@ -200,14 +267,7 @@ export function App() {
     setText('')
 
     // Память диалога: предыдущие ходы уходят на сервер, чтобы модели держали контекст.
-    const history = messages
-      .filter((message) => (message.kind === 'ai' ? message.modelId !== 'system' : true) && message.text.trim())
-      .slice(-12)
-      .map((message) =>
-        message.kind === 'user'
-          ? { role: 'user' as const, text: message.text }
-          : { role: 'assistant' as const, text: message.text, modelId: message.modelId },
-      )
+    const history = buildHistory(messages, memoryTurns)
 
     setMessages((prev) => [...prev, { kind: 'user', turn, text: trimmed, image: photo }])
 
@@ -220,6 +280,7 @@ export function App() {
           image: photo ?? '',
           models: activeModels.map((m) => m.id),
           history,
+          memory: memoryTurns,
         }),
       })
 
@@ -338,6 +399,26 @@ export function App() {
             </li>
           ))}
         </ul>
+
+        <div className={styles.memory}>
+          <div className={styles.memoryHead}>
+            <span className={styles.memoryTitle}>Память диалога</span>
+            <span className={styles.memoryValue}>
+              {memoryTurns} {pluralTurns(memoryTurns)}
+            </span>
+          </div>
+          <input
+            className={styles.range}
+            type="range"
+            min={0}
+            max={MAX_MEMORY}
+            step={1}
+            value={memoryTurns}
+            onChange={(event) => setMemoryTurns(Number(event.target.value))}
+            aria-label="Сколько прошлых ходов учитывать"
+          />
+          <p className={styles.memoryHint}>{memoryHint}</p>
+        </div>
       </aside>
 
       {sidebarOpen && (
