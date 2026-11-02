@@ -156,6 +156,19 @@ class HttpError extends Error {
   }
 }
 
+/** Лимит квоты или переполнение контекста: помогает не смена модели, а ужимание истории. */
+function isQuotaError(error: unknown): boolean {
+  if (!(error instanceof HttpError)) return false
+  return error.status === 429 || error.status === 402 || error.status === 413
+}
+
+/** Полный контекст → половина → пусто: последние ходы важнее старых. */
+function contextSteps(history: HistoryItem[]): HistoryItem[][] {
+  if (!history.length) return [[]]
+  const half = history.slice(Math.ceil(history.length / 2))
+  return half.length && half.length < history.length ? [history, half, []] : [history, []]
+}
+
 function describe(error: unknown): string {
   if (error instanceof HttpError) return `${error.status} ${error.message}`
   if (error instanceof Error && error.name === 'TimeoutError') return 'превышено время ожидания'
@@ -322,27 +335,36 @@ async function askModel(
       const remaining = deadline - Date.now()
       if (remaining < 5_000) break
 
-      try {
-        const messages = buildMessages(model, candidate, question, image, imageText, history)
-        const answer = await complete(
-          candidate.provider,
-          apiKey,
-          candidate.slug,
-          messages,
-          MAX_TOKENS,
-          Math.min(TIMEOUT_MS, remaining),
-        )
-        if (answer) {
-          return {
-            id: model.id,
-            label: model.label,
-            text: extractAnswer(answer),
-            ms: Date.now() - startedAt,
+      // При лимите сначала ужимаем контекст и повторяем ту же модель тем же ключом:
+      // это дешевле, чем менять модель и терять её характер вместе с памятью.
+      for (const step of contextSteps(history)) {
+        const left = deadline - Date.now()
+        if (left < 5_000) break
+        try {
+          const messages = buildMessages(model, candidate, question, image, imageText, step)
+          const answer = await complete(
+            candidate.provider,
+            apiKey,
+            candidate.slug,
+            messages,
+            MAX_TOKENS,
+            Math.min(TIMEOUT_MS, left),
+          )
+          if (answer) {
+            return {
+              id: model.id,
+              label: model.label,
+              text: extractAnswer(answer),
+              ms: Date.now() - startedAt,
+            }
           }
+          lastError = 'модель вернула пустой ответ'
+          break
+        } catch (error) {
+          lastError = describe(error)
+          // Дальше ужимать имеет смысл только при квоте: прочие ошибки — к следующему ключу.
+          if (!isQuotaError(error)) break
         }
-        lastError = 'модель вернула пустой ответ'
-      } catch (error) {
-        lastError = describe(error)
       }
     }
   }
