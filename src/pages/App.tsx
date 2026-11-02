@@ -56,8 +56,14 @@ const JPEG_QUALITY = 0.82
 const MAX_TEXTAREA = 168
 const STORAGE_KEY = 'exam-ai:session:v1'
 const MEMORY_KEY = 'exam-ai:memory:v1'
+const CONSENT_KEY = 'exam-ai:consent:v1'
 const DEFAULT_MEMORY = 3
 const MAX_MEMORY = 8
+/** Держим в согласии с сервером: длиннее он отклонит с ошибкой 413. */
+const MAX_TEXT = 4000
+
+/** Выбор в баннере хранилища: null — пользователь ещё не отвечал. */
+type ConsentChoice = 'all' | 'necessary'
 
 interface HistoryEntry {
   role: 'user' | 'assistant'
@@ -71,6 +77,15 @@ function pluralTurns(count: number): string {
   if (mod10 === 1 && mod100 !== 11) return 'ход'
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'хода'
   return 'ходов'
+}
+
+function loadConsent(): ConsentChoice | null {
+  try {
+    const raw = localStorage.getItem(CONSENT_KEY)
+    return raw === 'all' || raw === 'necessary' ? raw : null
+  } catch {
+    return null
+  }
 }
 
 function loadMemory(): number {
@@ -172,6 +187,7 @@ export function App() {
   const [messages, setMessages] = useState<Message[]>(loadMessages)
   const [pending, setPending] = useState(false)
   const [memoryTurns, setMemoryTurns] = useState(loadMemory)
+  const [consent, setConsent] = useState<ConsentChoice | null>(loadConsent)
   const [text, setText] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [enabled, setEnabled] = useState<Record<ModelId, boolean>>({
@@ -385,6 +401,15 @@ export function App() {
     }
   }
 
+  function chooseConsent(choice: ConsentChoice) {
+    setConsent(choice)
+    try {
+      localStorage.setItem(CONSENT_KEY, choice)
+    } catch {
+      /* приватный режим — выбор не запомнится, баннер покажется снова */
+    }
+  }
+
   return (
     <div className={styles.root}>
       <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ''}`}>
@@ -433,6 +458,18 @@ export function App() {
           />
           <p className={styles.memoryHint}>{memoryHint}</p>
         </div>
+
+        <nav className={styles.legalNav} aria-label="Правовая информация">
+          <a className={styles.legalLink} href="/privacy">
+            Политика конфиденциальности
+          </a>
+          <a className={styles.legalLink} href="/cookies">
+            Cookie и хранилище
+          </a>
+          <a className={styles.legalLink} href="/terms">
+            Пользовательское соглашение
+          </a>
+        </nav>
       </aside>
 
       {sidebarOpen && (
@@ -530,6 +567,21 @@ export function App() {
         )}
 
         <div className={`${styles.composerWrap} ${empty ? styles.composerCenter : ''}`}>
+          {empty && (
+            <div className={styles.hero}>
+              <span className={styles.heroMark}>Σ</span>
+              <h1 className={styles.heroTitle}>Четыре модели на один вопрос</h1>
+              <p className={styles.heroText}>
+                Вставь текст задания или прикрепи фото. Claude, Gemini, DeepSeek и ChatGPT ответят
+                параллельно, а совпавшая буква подсветится зелёным.
+              </p>
+              <ul className={styles.heroTips}>
+                <li>СОР и СОЧ как есть</li>
+                <li>Фото задания — кнопкой «+»</li>
+                <li>Enter — отправить</li>
+              </ul>
+            </div>
+          )}
           <div className={styles.composer}>
             <input
               ref={fileRef}
@@ -553,6 +605,7 @@ export function App() {
               className={styles.textarea}
               value={text}
               rows={1}
+              maxLength={MAX_TEXT}
               onChange={(event) => setText(event.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Сообщение"
@@ -568,9 +621,44 @@ export function App() {
               ↑
             </button>
           </div>
-          <p className={styles.disclaimer}>ИИ может ошибаться.</p>
+          <p className={styles.disclaimer}>
+            ИИ может ошибаться. Ответы для самопроверки.{" "}
+            <a className={styles.disclaimerLink} href="/terms">
+              Условия
+            </a>
+          </p>
         </div>
       </main>
+
+      {consent === null && (
+        <section className={styles.consent} aria-label="Использование локального хранилища">
+          <p className={styles.consentText}>
+            <span className={styles.consentTitle}>Cookie и локальное хранилище</span>
+            Cookie сайт не ставит, аналитики нет. В вашем браузере сохраняются история чата и
+            настройка памяти — без них чат не переживёт перезагрузку. Подробнее:{" "}
+            <a className={styles.consentLink} href="/privacy">
+              политика конфиденциальности
+            </a>{" "}
+            и <a className={styles.consentLink} href="/cookies">cookie</a>.
+          </p>
+          <div className={styles.consentActions}>
+            <button
+              type="button"
+              className={styles.consentGhost}
+              onClick={() => chooseConsent('necessary')}
+            >
+              Только необходимое
+            </button>
+            <button
+              type="button"
+              className={styles.consentPrimary}
+              onClick={() => chooseConsent('all')}
+            >
+              Принять
+            </button>
+          </div>
+        </section>
+      )}
     </div>
   )
 }
