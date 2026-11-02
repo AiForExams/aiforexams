@@ -133,6 +133,9 @@ const MAX_TOKENS = 400
 const TRANSCRIBE_TOKENS = 900
 const TIMEOUT_MS = 40_000
 const SLOT_BUDGET_MS = 80_000
+/** Лимит бесплатной модели часто снимается сам: две дополнительные попытки с паузой. */
+const RATE_LIMIT_RETRIES = 2
+const RATE_LIMIT_DELAY_MS = 2_500
 const DEFAULT_MEMORY_TURNS = 3
 const MAX_MEMORY_TURNS = 12
 /** Один ход — это вопрос и до четырёх ответов моделей. */
@@ -386,17 +389,16 @@ function buildMessages(
   return messages
 }
 
-async function askModel(
+/** Один проход по цепочке моделей и ключей: готовый текст либо пустая строка и причина в onError. */
+async function tryChain(
   model: ModelConfig,
   question: string,
   image: string,
   imageText: string,
   history: HistoryItem[],
-): Promise<ModelReply> {
-  const startedAt = Date.now()
-  const deadline = startedAt + SLOT_BUDGET_MS
-  let lastError: SlotError = { reason: 'noKeys', text: 'нет доступных ключей для этой модели' }
-
+  deadline: number,
+  onError: (error: SlotError) => void,
+): Promise<string> {
   for (const candidate of model.chain) {
     if (Date.now() > deadline) break
     // Модель без зрения без распознанного текста бесполезна — сразу к резерву.
@@ -426,26 +428,50 @@ async function askModel(
           )
           if (answer) {
             const cleaned = extractAnswer(answer)
-            if (cleaned) {
-              return {
-                id: model.id,
-                label: model.label,
-                text: cleaned,
-                ms: Date.now() - startedAt,
-              }
-            }
-            lastError = { reason: 'reasoning', text: 'модель написала только рассуждения, без решения' }
+            if (cleaned) return cleaned
+            onError({ reason: 'reasoning', text: 'модель написала только рассуждения, без решения' })
             break
           }
-          lastError = { reason: 'empty', text: 'модель вернула пустой ответ' }
+          onError({ reason: 'empty', text: 'модель вернула пустой ответ' })
           break
         } catch (error) {
-          lastError = classify(error)
+          onError(classify(error))
           // Дальше ужимать имеет смысл только при квоте: прочие ошибки — к следующему ключу.
           if (!isQuotaError(error)) break
         }
       }
     }
+  }
+  return ''
+}
+
+async function askModel(
+  model: ModelConfig,
+  question: string,
+  image: string,
+  imageText: string,
+  history: HistoryItem[],
+): Promise<ModelReply> {
+  const startedAt = Date.now()
+  const deadline = startedAt + SLOT_BUDGET_MS
+  let lastError: SlotError = { reason: 'noKeys', text: 'нет доступных ключей для этой модели' }
+
+  for (let pass = 0; pass <= RATE_LIMIT_RETRIES; pass += 1) {
+    if (pass > 0) {
+      const pause = RATE_LIMIT_DELAY_MS * pass
+      // Не ждём впустую, если после паузы уже не останется времени на сам запрос.
+      if (deadline - Date.now() - pause < 10_000) break
+      await new Promise((resolve) => setTimeout(resolve, pause))
+    }
+
+    const text = await tryChain(model, question, image, imageText, history, deadline, (error) => {
+      lastError = error
+    })
+    if (text) {
+      return { id: model.id, label: model.label, text, ms: Date.now() - startedAt }
+    }
+    // Ожидание помогает только от лимита: остальные причины от паузы не изменятся.
+    if (lastError.reason !== 'limit') break
   }
 
   return {
