@@ -215,6 +215,52 @@ async function complete(
   return answer
 }
 
+/** Строки, с которых начинается служебное рассуждение модели, а не ответ ученику. */
+const META_PREFIX =
+  /^(?:the user|user is|user asks|we need|we should|let me|let's|i need|i should|i will|i'll|i think|i'm|okay|ok[,.]|sure[,.]|now[, ]|so the|the question|the task|this is a|here'?s|analysis\s*[:：]|reasoning\s*[:：]|thinking\s*[:：]|response\s*[:：]|determine|identify|solve|verify|consider|analy[sz]e|look at|final answer|the answer|options?\b|wait\b|at the end|in the end|the instruction|separate line)/i
+
+/** «Предмет: математика. Тема: умножение.» — ярлык, а не решение: снимаем его, оставляя хвост. */
+function stripMetaLabels(line: string): string {
+  let text = line
+  for (let guard = 0; guard < 4; guard += 1) {
+    const label = text.match(
+      /^\s*(?:предмет|тема|задание|вопрос|тип задания|варианты|class|subject|topic)\s*[:：]\s*[^.]*\.?\s*/i,
+    )
+    if (!label) break
+    text = text.slice(label[0].length)
+  }
+  return text.trim()
+}
+
+/** Бесплатные модели иногда проговаривают рассуждения вслух — вырезаем эти строки. */
+function cleanBody(text: string): string {
+  const lines: string[] = []
+  for (const raw of text.split('\n')) {
+    // Проверяем строку без маркера списка: «- Determine subject…» — тоже рассуждение.
+    const probe = raw.replace(/^[\s>*•·\-–—]+/, '').replace(/^\d+[.)]\s+/, '')
+    if (!probe) continue
+    const labelled = stripMetaLabels(probe)
+    if (!labelled && probe.trim() !== raw.trim()) continue
+    if (labelled && labelled !== probe.trim()) {
+      lines.push(labelled)
+      continue
+    }
+    if (!labelled) continue
+    if (META_PREFIX.test(probe)) continue
+    // Строка без единой кириллической буквы, но с английскими словами — это рассуждение,
+    // а не решение: формулы вроде «7 × 8 = 56» под правило не попадают.
+    if (!/[а-яё]/i.test(probe) && /[a-z]{3,}/i.test(probe)) continue
+    // Пересказ самого шаблона ответа: «ОТВЕТ: <буква>) <текст варианта>».
+    if (/<[^>]+>/.test(probe)) continue
+    if (/инструкц|шаблон|промежуточн/i.test(probe)) continue
+    // Обрывок вроде «I» или «OK.» от оборванного по токенам рассуждения.
+    if (/^[A-Za-z]{1,2}[.,!?]?$/.test(probe)) continue
+    // Обычная строка — с её собственной нумерацией и отступами.
+    lines.push(raw.trim())
+  }
+  return lines.join('\n').trim()
+}
+
 /** Приводит ответ к виду «...пояснение...\nОТВЕТ: B) 56». */
 function extractAnswer(raw: string): string {
   const text = raw.trim()
@@ -225,18 +271,20 @@ function extractAnswer(raw: string): string {
     const letter = match[1].toUpperCase()
     const tail = match[2].trim().replace(/^[).:\-–—]+\s*/, '')
     const line = tail ? `ОТВЕТ: ${letter}) ${tail}` : `ОТВЕТ: ${letter}`
-    const body = text.replace(match[0], '').trim()
+    const body = cleanBody(text.replace(match[0], ''))
     return body ? `${body}\n${line}` : line
   }
 
-  const inline =
-    text.match(/(?:правильн\w*|верн\w*|ответ)\D{0,20}?\b([A-D])\b/i) ?? text.match(/\b([A-D])\)/)
-  if (!inline) return text
+  // Букву назначаем только там, где модель сказала о ней прямо; первый же вариант из списка
+  // брать нельзя — иначе зелёным подсветится A) из «A) 52 ≠ 54, B) 54 = 54».
+  const inline = text.match(/(?:правильн\w*|верн\w*|ответ)\D{0,20}?\b([A-D])\b/i)
+  if (!inline) return cleanBody(text)
 
   const letter = inline[1].toUpperCase()
   const tailMatch = text.match(new RegExp(`\\b${letter}\\)\\s*([^\\n,;.]{1,60})`))
   const tail = tailMatch ? tailMatch[1].trim() : ''
-  return `${text}\nОТВЕТ: ${letter}${tail ? `) ${tail}` : ''}`
+  const body = cleanBody(text)
+  return body ? `${body}\nОТВЕТ: ${letter}${tail ? `) ${tail}` : ''}` : `ОТВЕТ: ${letter}`
 }
 
 /** Фото распознаём один раз на запрос, если в цепочке есть модель без зрения. */
@@ -351,12 +399,17 @@ async function askModel(
             Math.min(TIMEOUT_MS, left),
           )
           if (answer) {
-            return {
-              id: model.id,
-              label: model.label,
-              text: extractAnswer(answer),
-              ms: Date.now() - startedAt,
+            const cleaned = extractAnswer(answer)
+            if (cleaned) {
+              return {
+                id: model.id,
+                label: model.label,
+                text: cleaned,
+                ms: Date.now() - startedAt,
+              }
             }
+            lastError = 'модель написала только рассуждения'
+            break
           }
           lastError = 'модель вернула пустой ответ'
           break
