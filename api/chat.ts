@@ -125,7 +125,9 @@ const SCHOOL_SUBJECT_RULES = [
   '',
   'Продолжай диалог: если в предыдущих ходах были задания, учитывай их и не противоречь своим прошлым ответам без причины. Если новый вопрос ссылается на прошлый («а если…», «почему не B»), отвечай с учётом этого контекста.',
   '',
-  'В конце ответа — отдельная строка: ОТВЕТ: <буква>) <текст варианта>.',
+  'Перед итогом — одна короткая строка проверки: что проверил и почему вариант верен.',
+  'Затем отдельная строка: ОТВЕТ: <буква>) <текст варианта>.',
+  'Ответ без проверки считается неполным.',
   'Коротко, точно, без воды. Не говори о себе, не отказывайся от вопроса.',
 ].join('\n')
 
@@ -141,6 +143,9 @@ const MAX_MEMORY_TURNS = 12
 /** Один ход — это вопрос и до четырёх ответов моделей. */
 const MESSAGES_PER_TURN = 5
 const MAX_HISTORY_CHARS = 1_200
+/** Просьба дописать проверку, если модель прислала только итоговую строку. */
+const JUSTIFICATION_NUDGE =
+  'Ты прислал только итоговую строку. Добавь перед ней одну короткую строку проверки: что проверил и почему этот вариант верен. Затем снова строка ОТВЕТ: <буква>) <текст варианта>.'
 
 interface Account {
   openrouter?: string
@@ -390,6 +395,42 @@ function buildMessages(
 }
 
 /** Один проход по цепочке моделей и ключей: готовый текст либо пустая строка и причина в onError. */
+/** Школьный режим требует обоснования: ответ из одной строки ОТВЕТ — неполный. */
+function lacksJustification(cleaned: string): boolean {
+  return cleaned.split('\n').filter((line) => line.trim()).length < 2
+}
+
+/** Доспрашиваем проверку у той же модели тем же ключом — один раз и без повторов. */
+async function reaskForJustification(
+  model: ModelConfig,
+  candidate: Candidate,
+  apiKey: string,
+  question: string,
+  image: string,
+  imageText: string,
+  history: HistoryItem[],
+  previous: string,
+  timeoutMs: number,
+): Promise<string> {
+  try {
+    const messages = buildMessages(model, candidate, question, image, imageText, history)
+    messages.push({ role: 'assistant', content: previous })
+    messages.push({ role: 'user', content: JUSTIFICATION_NUDGE })
+    const answer = await complete(
+      candidate.provider,
+      apiKey,
+      candidate.slug,
+      messages,
+      MAX_TOKENS,
+      timeoutMs,
+    )
+    const cleaned = answer ? extractAnswer(answer) : ''
+    return cleaned && !lacksJustification(cleaned) ? cleaned : ''
+  } catch {
+    return ''
+  }
+}
+
 async function tryChain(
   model: ModelConfig,
   question: string,
@@ -428,7 +469,25 @@ async function tryChain(
           )
           if (answer) {
             const cleaned = extractAnswer(answer)
-            if (cleaned) return cleaned
+            if (cleaned && !lacksJustification(cleaned)) return cleaned
+            if (cleaned) {
+              const spare = deadline - Date.now()
+              if (spare > 5_000) {
+                const refined = await reaskForJustification(
+                  model,
+                  candidate,
+                  apiKey,
+                  question,
+                  image,
+                  imageText,
+                  history,
+                  answer,
+                  Math.min(TIMEOUT_MS, spare),
+                )
+                if (refined) return refined
+              }
+              return cleaned
+            }
             onError({ reason: 'reasoning', text: 'модель написала только рассуждения, без решения' })
             break
           }
